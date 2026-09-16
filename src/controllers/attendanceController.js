@@ -120,4 +120,94 @@ async function listAttendance(req, res) {
   res.json(records);
 }
 
-module.exports = { mobileCheckIn, deviceCheckIn, myAttendance, listAttendance, updateAttendance };
+// Sunday is always off. Saturday is off only on the 2nd and 4th occurrence
+// of that weekday within its month.
+function isWeeklyOff(date) {
+  if (date.getDay() === 0) return true;
+  if (date.getDay() === 6) {
+    const weekIndex = Math.floor((date.getDate() - 1) / 7) + 1;
+    return weekIndex === 2 || weekIndex === 4;
+  }
+  return false;
+}
+
+// GET /attendance/stats — month-to-date summary for the logged-in employee:
+// Present, Absent, Leave, Off Days (weekly off + holidays, not double-counted), Payable.
+async function myMonthlyStats(req, res) {
+  const employeeId = req.employee.id;
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+
+  const startOfMonth = new Date(year, month, 1);
+  const today = new Date(year, month, now.getDate());
+  const monthEnd = new Date(year, month + 1, 0);
+
+  try {
+    const holidays = await prisma.holiday.findMany({
+      where: { date: { gte: startOfMonth, lte: monthEnd } },
+    });
+    const holidayDates = new Set(holidays.map((h) => new Date(h.date).toDateString()));
+
+    const leaves = await prisma.leaveRequest.findMany({
+      where: {
+        employeeId,
+        status: 'APPROVED',
+        fromDate: { lte: today },
+        toDate: { gte: startOfMonth },
+      },
+    });
+
+    const records = await prisma.attendanceRecord.findMany({
+      where: { employeeId, checkInAt: { gte: startOfMonth, lte: today } },
+    });
+    // A punch-in alone (even with no punch-out) still counts as Present.
+    // Absent only applies when there's no attendance record at all that day.
+    const presentDates = new Set(records.map((r) => new Date(r.checkInAt).toDateString()));
+
+    let present = 0;
+    let offDays = 0;
+    let leaveDays = 0;
+    let workingDays = 0;
+
+    for (let d = new Date(startOfMonth); d <= today; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toDateString();
+      const isOff = isWeeklyOff(d) || holidayDates.has(dateStr);
+
+      if (isOff) {
+        offDays++;
+        continue;
+      }
+
+      workingDays++;
+
+      if (presentDates.has(dateStr)) {
+        present++;
+        continue;
+      }
+
+      const onLeave = leaves.some(
+        (l) => new Date(l.fromDate) <= d && new Date(l.toDate) >= d
+      );
+      if (onLeave) leaveDays++;
+    }
+
+    const absent = Math.max(workingDays - present - leaveDays, 0);
+    const payable = present + leaveDays;
+
+    res.json({
+      payable: payable.toFixed(1),
+      present: present.toFixed(1),
+      offDays: offDays.toFixed(1),
+      leave: leaveDays.toFixed(1),
+      absent: absent.toFixed(1),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to compute stats' });
+  }
+}
+
+module.exports = {
+  mobileCheckIn, deviceCheckIn, myAttendance, listAttendance, updateAttendance, myMonthlyStats,
+};

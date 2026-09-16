@@ -5,6 +5,7 @@ const {
   myAttendance,
   listAttendance,
   updateAttendance,
+  myMonthlyStats,
 } = require('../controllers/attendanceController');
 const { requireAuth } = require('../middleware/auth');
 const requireRole = require('../middleware/requireRole');
@@ -15,6 +16,7 @@ const router = express.Router();
 // Mobile app (employee logged in + biometric confirmed on-device)
 router.post('/mobile-checkin', requireAuth, mobileCheckIn);
 router.get('/me', requireAuth, myAttendance);
+router.get('/stats', requireAuth, myMonthlyStats);
 
 // Office hardware device (authenticated via API key, not a user session)
 router.post('/device-checkin', requireDeviceKey, deviceCheckIn);
